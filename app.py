@@ -1,3 +1,4 @@
+```python
 from flask import Flask, render_template, request, jsonify, session
 import os
 import google.generativeai as genai
@@ -6,15 +7,25 @@ from utils.resume_ai_v2 import analyze_resume
 from utils.career_ai import career_brain
 
 app = Flask(__name__)
-app.secret_key = "supersecretkey"
+
+# Use environment variable in production
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
 
 UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+# Gemini Configuration
+api_key = os.getenv("GEMINI_API_KEY")
+
+if not api_key:
+    raise ValueError("GEMINI_API_KEY environment variable is not set")
+
+genai.configure(api_key=api_key)
+
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# ---------- HOME ----------
+
 @app.route("/")
 def home():
     if "chat" not in session:
@@ -22,62 +33,98 @@ def home():
     return render_template("index.html")
 
 
-# ---------- CHAT (TOP 1%) ----------
 @app.route("/chat", methods=["POST"])
 def chat():
-    user_msg = request.form.get("message")
-    resume_text = request.form.get("resume_text", "")
+    try:
+        user_msg = request.form.get("message", "")
+        resume_text = request.form.get("resume_text", "")
 
-    chat = session.get("chat", [])
-    chat.append({"role": "user", "msg": user_msg})
+        if not user_msg:
+            return jsonify({"error": "Message is required"}), 400
 
-    prompt = f"""
-You are an elite FAANG-level Career Coach AI.
+        chat_history = session.get("chat", [])
 
-Conversation:
-{chat}
+        prompt = f"""
+You are an expert Career Guidance AI Assistant.
 
 Resume:
 {resume_text}
 
-User:
+Previous Conversation:
+{chat_history}
+
+Current User Question:
 {user_msg}
 
-Give:
-- precise answer
-- actionable steps
-- career advice if relevant
-- keep response structured and professional
+Provide:
+1. Direct answer
+2. Actionable recommendations
+3. Career guidance when relevant
+4. Structured formatting
 """
 
-    response = model.generate_content(prompt)
+        response = model.generate_content(prompt)
 
-    chat.append({"role": "ai", "msg": response.text})
-    session["chat"] = chat
+        reply = response.text if hasattr(response, "text") else "No response generated."
 
-    return jsonify({"reply": response.text})
+        chat_history.append({"role": "user", "msg": user_msg})
+        chat_history.append({"role": "assistant", "msg": reply})
+
+        # Keep only latest messages
+        session["chat"] = chat_history[-10:]
+
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
-# ---------- RESUME ANALYSIS ----------
 @app.route("/upload", methods=["POST"])
 def upload():
-    file = request.files["file"]
-    filename = secure_filename(file.filename)
+    try:
+        if "file" not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
 
-    path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    file.save(path)
+        file = request.files["file"]
 
-    result = analyze_resume(path)
+        if file.filename == "":
+            return jsonify({"error": "No file selected"}), 400
 
-    return jsonify(result)
+        filename = secure_filename(file.filename)
+
+        path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        file.save(path)
+
+        result = analyze_resume(path)
+
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
-# ---------- CAREER BRAIN ----------
 @app.route("/career", methods=["POST"])
 def career():
-    data = request.json
-    return jsonify(career_brain(data["resume_text"]))
+    try:
+        data = request.get_json()
+
+        if not data or "resume_text" not in data:
+            return jsonify({"error": "resume_text required"}), 400
+
+        result = career_brain(data["resume_text"])
+
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/health")
+def health():
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+```
